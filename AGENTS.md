@@ -12,6 +12,7 @@ This file provides guidance to AI coding agents working on the `skills` CLI code
 | ----------------------------- | --------------------------------------------------- |
 | `skills`                      | Show banner with available commands                 |
 | `skills add <pkg>`            | Install skills from git repos, URLs, or local paths |
+| `skills pack <source>`        | Pack a skill to .skill file                         |
 | `skills experimental_install` | Restore skills from skills-lock.json                |
 | `skills experimental_sync`    | Sync skills from node_modules into agent dirs       |
 | `skills list`                 | List installed skills (alias: `ls`)                 |
@@ -19,7 +20,7 @@ This file provides guidance to AI coding agents working on the `skills` CLI code
 | `skills update`               | Update all skills to latest versions                |
 | `skills init [name]`          | Create a new SKILL.md template                      |
 
-Aliases: `skills a` works for `add`. `skills i`, `skills install` (no args) restore from `skills-lock.json`. `skills ls` works for `list`. `skills experimental_install` restores from `skills-lock.json`. `skills experimental_sync` crawls `node_modules` for skills.
+Aliases: `skills a` works for `add`. `skills p` works for `pack`. `skills i`, `skills install` (no args) restore from `skills-lock.json`. `skills ls` works for `list`. `skills experimental_install` restores from `skills-lock.json`. `skills experimental_sync` crawls `node_modules` for skills.
 
 ## Architecture
 
@@ -29,6 +30,7 @@ src/
 ├── cli.test.ts      # CLI tests
 ├── add.ts           # Core add command logic
 ├── add.test.ts      # Add command tests
+├── pack.ts           # Pack command - create .skill files
 ├── list.ts          # List installed skills command
 ├── list.test.ts     # List command tests
 ├── agents.ts        # Agent definitions and detection
@@ -41,6 +43,7 @@ src/
 ├── git.ts           # Git clone operations
 ├── telemetry.ts     # Anonymous usage tracking
 ├── types.ts         # TypeScript types
+├── validation.ts    # Skill validation logic (SKILL.md parsing)
 ├── mintlify.ts      # Mintlify skill fetching (legacy)
 ├── providers/       # Remote skill providers (GitHub, HuggingFace, Mintlify)
 │   ├── index.ts

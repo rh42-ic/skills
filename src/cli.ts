@@ -12,6 +12,7 @@ import { runInstallFromLock } from './install.ts';
 import { runList } from './list.ts';
 import { removeCommand, parseRemoveOptions } from './remove.ts';
 import { runSync, parseSyncOptions } from './sync.ts';
+import { runPack, parsePackOptions } from './pack.ts';
 import { track } from './telemetry.ts';
 import { fetchSkillFolderHash, getGitHubToken } from './skill-lock.ts';
 
@@ -81,6 +82,10 @@ function showBanner(): void {
   );
   console.log();
   console.log(
+    `  ${DIM}$${RESET} ${TEXT}npx skills pack ${DIM}<source>${RESET}        ${DIM}Pack a skill to .skill file${RESET}`
+  );
+  console.log();
+  console.log(
     `  ${DIM}$${RESET} ${TEXT}npx skills check${RESET}                ${DIM}Check for updates${RESET}`
   );
   console.log(
@@ -109,11 +114,17 @@ ${BOLD}Usage:${RESET} skills <command> [options]
 
 ${BOLD}Manage Skills:${RESET}
   add <package>        Add a skill package (alias: a)
-                       e.g. vercel-labs/agent-skills
-                            https://github.com/vercel-labs/agent-skills
+                        e.g. vercel-labs/agent-skills
+                             https://github.com/vercel-labs/agent-skills
   remove [skills]      Remove installed skills
   list, ls             List installed skills
   find [query]         Search for skills interactively
+
+${BOLD}Package:${RESET}
+  pack <source>        Pack a skill to .skill file
+                        e.g. ./my-skill
+                             owner/repo
+                             --installed <name>
 
 ${BOLD}Updates:${RESET}
   check                Check for available skill updates
@@ -140,6 +151,14 @@ ${BOLD}Remove Options:${RESET}
   -s, --skill <skills>   Specify skills to remove (use '*' for all skills)
   -y, --yes              Skip confirmation prompts
   --all                  Shorthand for --skill '*' --agent '*' -y
+
+${BOLD}Pack Options:${RESET}
+  -o, --output <dir>     Output directory (default: current directory)
+  -s, --skill <name>     Pack specific skill by name
+  --all                  Pack all skills (implies -y)
+  -y, --yes              Skip confirmation prompts
+  -l, --list             List available skills without packing
+  --installed            Pack from installed skills directory
   
 ${BOLD}Experimental Sync Options:${RESET}
   -a, --agent <agents>   Specify agents to install to (use '*' for all agents)
@@ -684,6 +703,15 @@ async function main(): Promise<void> {
     case 'list':
     case 'ls':
       await runList(restArgs);
+      break;
+    case 'pack':
+    case 'p':
+      showLogo();
+      console.log();
+      {
+        const { source: packSource, options: packOpts } = parsePackOptions(restArgs);
+        await runPack(packSource, packOpts);
+      }
       break;
     case 'check':
       runCheck(restArgs);
