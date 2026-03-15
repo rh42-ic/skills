@@ -229,6 +229,38 @@ Discover more skills at ${TEXT}https://skills.sh/${RESET}
 `);
 }
 
+function showPackHelp(): void {
+  console.log(`
+${BOLD}Usage:${RESET} skills pack <source> [options]
+
+${BOLD}Description:${RESET}
+  Pack a skill into a .skill file (ZIP format). Skills can be packed from
+  local paths, GitHub/GitLab repositories, or installed skills.
+
+${BOLD}Arguments:${RESET}
+  source             Path to skill directory, Git repository, or use --installed
+
+${BOLD}Options:${RESET}
+  -o, --output <dir>     Output directory (default: current directory)
+  -s, --skill <name>     Pack specific skill by name
+  --all                  Pack all skills (implies -y)
+  -y, --yes              Skip confirmation prompts
+  -l, --list             List available skills without packing
+  --installed            Pack from installed skills directory
+
+${BOLD}Examples:${RESET}
+  ${DIM}$${RESET} skills pack ./my-skill                 ${DIM}# pack local skill${RESET}
+  ${DIM}$${RESET} skills pack owner/repo                ${DIM}# pack from GitHub${RESET}
+  ${DIM}$${RESET} skills pack owner/repo --skill foo   ${DIM}# pack specific skill${RESET}
+  ${DIM}$${RESET} skills pack . --list                 ${DIM}# list skills in directory${RESET}
+  ${DIM}$${RESET} skills pack --installed --list        ${DIM}# list installed skills${RESET}
+  ${DIM}$${RESET} skills pack --installed --skill foo   ${DIM}# pack installed skill${RESET}
+  ${DIM}$${RESET} skills pack . --all -o /tmp           ${DIM}# pack all skills to /tmp${RESET}
+
+Discover more skills at ${TEXT}https://skills.sh/${RESET}
+`);
+}
+
 function runInit(args: string[]): void {
   const cwd = process.cwd();
   const skillName = args[0] || basename(cwd);
@@ -706,6 +738,11 @@ async function main(): Promise<void> {
       break;
     case 'pack':
     case 'p':
+      // Check for --help or -h flag
+      if (restArgs.includes('--help') || restArgs.includes('-h')) {
+        showPackHelp();
+        break;
+      }
       showLogo();
       console.log();
       {
