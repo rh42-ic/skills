@@ -294,7 +294,7 @@ description: ${validDesc}
   });
 
   describe('unexpected properties', () => {
-    it('should reject unexpected properties in frontmatter', async () => {
+    it('should warn about unexpected properties in frontmatter by default', async () => {
       writeFileSync(
         join(testDir, 'SKILL.md'),
         `---
@@ -307,8 +307,29 @@ invalid-property: something
       );
 
       const result = await validateSkill(testDir);
+      expect(result.valid).toBe(true);
+      expect(result.warnings).toContain(
+        'Unexpected key(s) in SKILL.md frontmatter: invalid-property. Allowed properties are: allowed-tools, compatibility, description, license, metadata, name'
+      );
+    });
+
+    it('should reject unexpected properties in strict mode', async () => {
+      writeFileSync(
+        join(testDir, 'SKILL.md'),
+        `---
+name: my-skill
+description: A test skill
+invalid-property: something
+---
+
+# My Skill`
+      );
+
+      const result = await validateSkill(testDir, { strictProperties: true });
       expect(result.valid).toBe(false);
-      expect(result.message).toContain('Unexpected key');
+      expect(result.errors).toContain(
+        'Unexpected key(s) in SKILL.md frontmatter: invalid-property. Allowed properties are: allowed-tools, compatibility, description, license, metadata, name'
+      );
     });
 
     it('should accept allowed properties', async () => {

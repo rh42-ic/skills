@@ -6,6 +6,11 @@ export interface ValidationResult {
   valid: boolean;
   message: string;
   errors: string[];
+  warnings: string[];
+}
+
+export interface ValidateSkillOptions {
+  strictProperties?: boolean;
 }
 
 const ALLOWED_PROPERTIES = [
@@ -19,8 +24,12 @@ const ALLOWED_PROPERTIES = [
 
 const KEBAB_CASE_REGEX = /^[a-z0-9-]+$/;
 
-export async function validateSkill(skillPath: string): Promise<ValidationResult> {
+export async function validateSkill(
+  skillPath: string,
+  options?: ValidateSkillOptions
+): Promise<ValidationResult> {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   const skillMdPath = join(skillPath, 'SKILL.md');
 
@@ -32,6 +41,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
       valid: false,
       message: 'SKILL.md not found',
       errors: ['SKILL.md not found'],
+      warnings: [],
     };
   }
 
@@ -41,6 +51,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
       valid: false,
       message: 'No YAML frontmatter found',
       errors,
+      warnings: [],
     };
   }
 
@@ -51,6 +62,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
       valid: false,
       message: 'Invalid frontmatter format',
       errors,
+      warnings: [],
     };
   }
 
@@ -65,6 +77,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
         valid: false,
         message: 'Frontmatter must be a YAML dictionary',
         errors,
+        warnings: [],
       };
     }
   } catch (e) {
@@ -74,6 +87,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
       valid: false,
       message: `Invalid YAML in frontmatter: ${errMsg}`,
       errors,
+      warnings: [],
     };
   }
 
@@ -82,9 +96,12 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
   );
   if (unexpectedKeys.length > 0) {
     const sorted = unexpectedKeys.sort();
-    errors.push(
-      `Unexpected key(s) in SKILL.md frontmatter: ${sorted.join(', ')}. Allowed properties are: ${ALLOWED_PROPERTIES.sort().join(', ')}`
-    );
+    const msg = `Unexpected key(s) in SKILL.md frontmatter: ${sorted.join(', ')}. Allowed properties are: ${ALLOWED_PROPERTIES.sort().join(', ')}`;
+    if (options?.strictProperties) {
+      errors.push(msg);
+    } else {
+      warnings.push(msg);
+    }
   }
 
   if (!('name' in frontmatter)) {
@@ -99,6 +116,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
       valid: false,
       message: errors[0]!,
       errors,
+      warnings,
     };
   }
 
@@ -160,6 +178,7 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
       valid: false,
       message: errors[0]!,
       errors,
+      warnings,
     };
   }
 
@@ -167,5 +186,6 @@ export async function validateSkill(skillPath: string): Promise<ValidationResult
     valid: true,
     message: 'Skill is valid!',
     errors: [],
+    warnings,
   };
 }

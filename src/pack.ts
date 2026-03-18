@@ -8,7 +8,7 @@ import archiver from 'archiver';
 import { parseSource, fetchRemoteRepoSize, getOwnerRepo } from './source-parser.ts';
 import { cloneRepo, cleanupTempDir, GitCloneError } from './git.ts';
 import { discoverSkills, getSkillDisplayName, filterSkills } from './skills.ts';
-import { validateSkill } from './validation.ts';
+import { validateSkill, type ValidateSkillOptions } from './validation.ts';
 import type { Skill, RepoSizeResult } from './types.ts';
 
 interface InstalledSkillForPack {
@@ -31,6 +31,7 @@ export interface PackOptions {
   maxSize?: number;
   maxRepoSize?: number;
   skipSizeCheck?: boolean;
+  strictProperties?: boolean;
 }
 
 const DEFAULT_MAX_SIZE_MB = 50;
@@ -308,6 +309,12 @@ export function parsePackOptions(args: string[]): { source: string | null; optio
 
     if (arg === '--skip-size-check') {
       options.skipSizeCheck = true;
+      i += 1;
+      continue;
+    }
+
+    if (arg === '--strict-properties') {
+      options.strictProperties = true;
       i += 1;
       continue;
     }
@@ -648,6 +655,7 @@ export async function runPack(source: string | null, options: PackOptions): Prom
 
     const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE_MB * 1024 * 1024;
     const skipSizeCheck = options.skipSizeCheck;
+    const strictProperties = options.strictProperties;
 
     const results: Array<{
       skill: Skill;
@@ -660,7 +668,7 @@ export async function runPack(source: string | null, options: PackOptions): Prom
       const skillName = getSkillDisplayName(skill);
       const outputFile = resolve(outputDir, `${skillName}.skill`);
 
-      const validation = await validateSkill(skill.path);
+      const validation = await validateSkill(skill.path, { strictProperties });
       if (!validation.valid) {
         results.push({
           skill,
@@ -669,6 +677,12 @@ export async function runPack(source: string | null, options: PackOptions): Prom
           error: validation.message,
         });
         continue;
+      }
+      if (validation.warnings.length > 0) {
+        for (const warning of validation.warnings) {
+          spinner.stop(pc.yellow(`Warning: ${warning}`));
+          spinner.start('Validating and packing...');
+        }
       }
 
       if (!skipSizeCheck) {
@@ -837,6 +851,7 @@ async function runPackInstalled(
 
   const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE_MB * 1024 * 1024;
   const skipSizeCheck = options.skipSizeCheck;
+  const strictProperties = options.strictProperties;
 
   const results: Array<{
     skill: InstalledSkillForPack;
@@ -848,7 +863,7 @@ async function runPackInstalled(
   for (const skill of selectedSkills) {
     const outputFile = resolve(outputDir, `${skill.name}.skill`);
 
-    const validation = await validateSkill(skill.path);
+    const validation = await validateSkill(skill.path, { strictProperties });
     if (!validation.valid) {
       results.push({
         skill,
@@ -857,6 +872,12 @@ async function runPackInstalled(
         error: validation.message,
       });
       continue;
+    }
+    if (validation.warnings.length > 0) {
+      for (const warning of validation.warnings) {
+        spinner.stop(pc.yellow(`Warning: ${warning}`));
+        spinner.start('Validating and packing...');
+      }
     }
 
     if (!skipSizeCheck) {

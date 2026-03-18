@@ -162,6 +162,7 @@ ${BOLD}Pack Options:${RESET}
   --max-size <size>      Maximum skill size limit (default: 50MB)
   --max-repo-size <size> Maximum repository size limit (default: 500MB)
   --skip-size-check      Skip size validation
+  --strict-properties    Treat unexpected frontmatter properties as errors (default: warnings)
   
 ${BOLD}Experimental Sync Options:${RESET}
   -a, --agent <agents>   Specify agents to install to (use '*' for all agents)
@@ -253,6 +254,7 @@ ${BOLD}Options:${RESET}
   --max-size <size>      Maximum skill size limit (default: 50MB)
   --max-repo-size <size> Maximum repository size limit (default: 500MB)
   --skip-size-check      Skip size validation
+  --strict-properties    Treat unexpected frontmatter properties as errors (default: warnings)
 
 ${BOLD}Examples:${RESET}
   ${DIM}$${RESET} skills pack ./my-skill                 ${DIM}# pack local skill${RESET}
@@ -263,6 +265,7 @@ ${BOLD}Examples:${RESET}
   ${DIM}$${RESET} skills pack --installed --skill foo   ${DIM}# pack installed skill${RESET}
   ${DIM}$${RESET} skills pack . --all -o /tmp           ${DIM}# pack all skills to /tmp${RESET}
   ${DIM}$${RESET} skills pack ./skill --max-size 10MB  ${DIM}# allow up to 10MB${RESET}
+  ${DIM}$${RESET} skills pack ./skill --strict-properties ${DIM}# strict property validation${RESET}
 
 Discover more skills at ${TEXT}https://skills.sh/${RESET}
 `);

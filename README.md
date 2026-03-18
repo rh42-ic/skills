@@ -180,17 +180,18 @@ npx skills pack owner/repo --max-repo-size 1GB
 npx skills pack ./my-skill --skip-size-check
 ```
 
-| Option                   | Description                                    |
-| ------------------------ | ---------------------------------------------- |
-| `-o, --output <dir>`     | Output directory (default: current directory)  |
-| `-s, --skill <name>`     | Pack specific skill by name                    |
-| `--all`                  | Pack all skills (implies `-y`)                 |
-| `-y, --yes`              | Skip confirmation prompts                      |
-| `-l, --list`             | List available skills without packing          |
-| `--installed`            | Pack from installed skills directory           |
-| `--max-size <size>`      | Maximum skill size limit (default: 50MB)       |
-| `--max-repo-size <size>` | Maximum repository size limit (default: 500MB) |
-| `--skip-size-check`      | Skip size validation                           |
+| Option                   | Description                                                          |
+| ------------------------ | -------------------------------------------------------------------- |
+| `-o, --output <dir>`     | Output directory (default: current directory)                        |
+| `-s, --skill <name>`     | Pack specific skill by name                                          |
+| `--all`                  | Pack all skills (implies `-y`)                                       |
+| `-y, --yes`              | Skip confirmation prompts                                            |
+| `-l, --list`             | List available skills without packing                                |
+| `--installed`            | Pack from installed skills directory                                 |
+| `--max-size <size>`      | Maximum skill size limit (default: 50MB)                             |
+| `--max-repo-size <size>` | Maximum repository size limit (default: 500MB)                       |
+| `--skip-size-check`      | Skip size validation                                                 |
+| `--strict-properties`    | Treat unexpected frontmatter properties as errors (default: warning) |
 
 ### `skills init`
 
