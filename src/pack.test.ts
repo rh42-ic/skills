@@ -29,6 +29,9 @@ describe('pack command', () => {
       expect(result.stdout).toContain('--list');
       expect(result.stdout).toContain('--yes');
       expect(result.stdout).toContain('--all');
+      expect(result.stdout).toContain('--max-size');
+      expect(result.stdout).toContain('--max-repo-size');
+      expect(result.stdout).toContain('--skip-size-check');
       expect(result.exitCode).toBe(0);
     });
   });
@@ -161,6 +164,98 @@ name: no-desc-skill
     });
   });
 
+  describe('size limits', () => {
+    it('should reject skill exceeding size limit', () => {
+      const skillDir = join(testDir, 'skills', 'large-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: large-skill
+description: A skill with large content
+---
+
+# Large Skill
+`
+      );
+      const largeContent = 'x'.repeat(200 * 1024);
+      writeFileSync(join(skillDir, 'large-file.txt'), largeContent);
+
+      const outputDir = join(testDir, 'output');
+      mkdirSync(outputDir, { recursive: true });
+
+      const result = runCli(
+        ['pack', testDir, '--skill', 'large-skill', '-y', '-o', outputDir, '--max-size', '100KB'],
+        testDir
+      );
+      expect(result.stdout).toContain('size exceeds limit');
+      expect(result.exitCode).toBe(1);
+    });
+
+    it('should pack skill within size limit', () => {
+      const skillDir = join(testDir, 'skills', 'small-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: small-skill
+description: A small skill
+---
+
+# Small Skill
+`
+      );
+
+      const outputDir = join(testDir, 'output');
+      mkdirSync(outputDir, { recursive: true });
+
+      const result = runCli(
+        ['pack', testDir, '--skill', 'small-skill', '-y', '-o', outputDir, '--max-size', '100KB'],
+        testDir
+      );
+      expect(result.stdout).toContain('Packed');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('should skip size check with --skip-size-check flag', () => {
+      const skillDir = join(testDir, 'skills', 'large-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: large-skill
+description: A skill with large content
+---
+
+# Large Skill
+`
+      );
+      const largeContent = 'x'.repeat(200 * 1024);
+      writeFileSync(join(skillDir, 'large-file.txt'), largeContent);
+
+      const outputDir = join(testDir, 'output');
+      mkdirSync(outputDir, { recursive: true });
+
+      const result = runCli(
+        [
+          'pack',
+          testDir,
+          '--skill',
+          'large-skill',
+          '-y',
+          '-o',
+          outputDir,
+          '--max-size',
+          '100KB',
+          '--skip-size-check',
+        ],
+        testDir
+      );
+      expect(result.stdout).toContain('Packed');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
   describe('--installed flag', () => {
     it('should list installed skills with --installed --list', () => {
       const result = runCli(['pack', '--installed', '--list'], testDir);
@@ -247,12 +342,52 @@ describe('parsePackOptions', () => {
     expect(result.options.installed).toBe(true);
   });
 
-  it('should parse combined flags', () => {
-    const result = parsePackOptions(['source', '--skill', 'my-skill', '-y', '--output', '/tmp']);
+  it('should parse --max-size flag with KB', () => {
+    const result = parsePackOptions(['source', '--max-size', '100KB']);
+    expect(result.source).toBe('source');
+    expect(result.options.maxSize).toBe(100 * 1024);
+  });
+
+  it('should parse --max-size flag with MB', () => {
+    const result = parsePackOptions(['source', '--max-size', '50MB']);
+    expect(result.source).toBe('source');
+    expect(result.options.maxSize).toBe(50 * 1024 * 1024);
+  });
+
+  it('should parse --max-size flag with GB', () => {
+    const result = parsePackOptions(['source', '--max-size', '1GB']);
+    expect(result.source).toBe('source');
+    expect(result.options.maxSize).toBe(1024 * 1024 * 1024);
+  });
+
+  it('should parse --max-repo-size flag', () => {
+    const result = parsePackOptions(['source', '--max-repo-size', '500MB']);
+    expect(result.source).toBe('source');
+    expect(result.options.maxRepoSize).toBe(500 * 1024 * 1024);
+  });
+
+  it('should parse --skip-size-check flag', () => {
+    const result = parsePackOptions(['source', '--skip-size-check']);
+    expect(result.source).toBe('source');
+    expect(result.options.skipSizeCheck).toBe(true);
+  });
+
+  it('should parse combined flags including size limits', () => {
+    const result = parsePackOptions([
+      'source',
+      '--skill',
+      'my-skill',
+      '-y',
+      '--max-size',
+      '10MB',
+      '--max-repo-size',
+      '100MB',
+    ]);
     expect(result.source).toBe('source');
     expect(result.options.skill).toEqual(['my-skill']);
     expect(result.options.yes).toBe(true);
-    expect(result.options.output).toBe('/tmp');
+    expect(result.options.maxSize).toBe(10 * 1024 * 1024);
+    expect(result.options.maxRepoSize).toBe(100 * 1024 * 1024);
   });
 
   it('should handle no source', () => {

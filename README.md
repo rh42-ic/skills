@@ -169,16 +169,28 @@ npx skills pack ./my-skills --all -o ./output
 
 # Pack without confirmation prompts
 npx skills pack owner/repo --skill my-skill -y
+
+# Pack with custom size limit (default: 50MB)
+npx skills pack ./my-skill --max-size 100MB
+
+# Pack with custom repository size limit (default: 500MB)
+npx skills pack owner/repo --max-repo-size 1GB
+
+# Skip size validation
+npx skills pack ./my-skill --skip-size-check
 ```
 
-| Option               | Description                                   |
-| -------------------- | --------------------------------------------- |
-| `-o, --output <dir>` | Output directory (default: current directory) |
-| `-s, --skill <name>` | Pack specific skill by name                   |
-| `--all`              | Pack all skills (implies `-y`)                |
-| `-y, --yes`          | Skip confirmation prompts                     |
-| `-l, --list`         | List available skills without packing         |
-| `--installed`        | Pack from installed skills directory          |
+| Option                   | Description                                    |
+| ------------------------ | ---------------------------------------------- |
+| `-o, --output <dir>`     | Output directory (default: current directory)  |
+| `-s, --skill <name>`     | Pack specific skill by name                    |
+| `--all`                  | Pack all skills (implies `-y`)                 |
+| `-y, --yes`              | Skip confirmation prompts                      |
+| `-l, --list`             | List available skills without packing          |
+| `--installed`            | Pack from installed skills directory           |
+| `--max-size <size>`      | Maximum skill size limit (default: 50MB)       |
+| `--max-repo-size <size>` | Maximum repository size limit (default: 500MB) |
+| `--skip-size-check`      | Skip size validation                           |
 
 ### `skills init`
 

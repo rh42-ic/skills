@@ -5,11 +5,11 @@ import { resolve, relative, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { readdir as readdirAsync, stat as statAsync } from 'fs/promises';
 import archiver from 'archiver';
-import { parseSource } from './source-parser.ts';
+import { parseSource, fetchRemoteRepoSize, getOwnerRepo } from './source-parser.ts';
 import { cloneRepo, cleanupTempDir, GitCloneError } from './git.ts';
 import { discoverSkills, getSkillDisplayName, filterSkills } from './skills.ts';
 import { validateSkill } from './validation.ts';
-import type { Skill } from './types.ts';
+import type { Skill, RepoSizeResult } from './types.ts';
 
 interface InstalledSkillForPack {
   name: string;
@@ -28,6 +28,36 @@ export interface PackOptions {
   all?: boolean;
   list?: boolean;
   installed?: boolean;
+  maxSize?: number;
+  maxRepoSize?: number;
+  skipSizeCheck?: boolean;
+}
+
+const DEFAULT_MAX_SIZE_MB = 50;
+const DEFAULT_MAX_REPO_SIZE_MB = 500;
+
+function parseSizeArg(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = value.match(/^(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB)?$/i);
+  if (!match) return undefined;
+  const num = parseFloat(match[1]!);
+  const unit = (match[2] || 'B').toUpperCase();
+  const multipliers: Record<string, number> = {
+    B: 1,
+    KB: 1024,
+    MB: 1024 * 1024,
+    GB: 1024 * 1024 * 1024,
+    TB: 1024 * 1024 * 1024 * 1024,
+  };
+  return Math.round(num * (multipliers[unit] || 1));
+}
+
+function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  if (bytes === 0) return '0 B';
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const size = bytes / Math.pow(1024, i);
+  return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
 function shouldExclude(relPath: string, skillRootDir: string): boolean {
@@ -165,6 +195,39 @@ async function packageSkillToZip(
   });
 }
 
+async function calculateSkillSize(skillPath: string): Promise<number> {
+  let totalSize = 0;
+  const skillRoot = skillPath;
+  const parentDir = resolve(skillPath, '..');
+
+  const calculateDir = async (dir: string): Promise<void> => {
+    const entries = await readdirAsync(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = resolve(dir, entry.name);
+      const relPath = relative(parentDir, fullPath);
+
+      if (shouldExclude(relPath, skillRoot)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await calculateDir(fullPath);
+      } else if (entry.isFile()) {
+        try {
+          const stats = await statAsync(fullPath);
+          totalSize += stats.size;
+        } catch {
+          // Ignore files that can't be stat'd
+        }
+      }
+    }
+  };
+
+  await calculateDir(skillPath);
+  return totalSize;
+}
+
 export function parsePackOptions(args: string[]): { source: string | null; options: PackOptions } {
   const options: PackOptions = {};
   const positionalArgs: string[] = [];
@@ -215,6 +278,40 @@ export function parsePackOptions(args: string[]): { source: string | null; optio
       continue;
     }
 
+    if (arg === '--max-size') {
+      const value = args[i + 1];
+      if (value) {
+        const parsed = parseSizeArg(value);
+        if (parsed !== undefined) {
+          options.maxSize = parsed;
+        }
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg === '--max-repo-size') {
+      const value = args[i + 1];
+      if (value) {
+        const parsed = parseSizeArg(value);
+        if (parsed !== undefined) {
+          options.maxRepoSize = parsed;
+        }
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg === '--skip-size-check') {
+      options.skipSizeCheck = true;
+      i += 1;
+      continue;
+    }
+
     if (arg && arg.startsWith('-')) {
       i += 1;
       continue;
@@ -244,6 +341,41 @@ async function cleanup(tempDir: string | null): Promise<void> {
       // ignore cleanup errors
     }
   }
+}
+
+function showSizeError(
+  type: 'repo' | 'skill',
+  actualBytes: number,
+  maxBytes: number,
+  skillName?: string
+): void {
+  const actualFormatted = formatBytes(actualBytes);
+  const maxFormatted = formatBytes(maxBytes);
+  const typeLabel = type === 'repo' ? 'Repository' : 'Skill';
+  const actualLabel = type === 'repo' ? 'actual-repo-size' : 'actual-skill-size';
+  const maxLabel = type === 'repo' ? 'max-repo-size' : 'max-skill-size';
+
+  console.log();
+  console.log(
+    pc.bgRed(pc.white(pc.bold(' ERROR '))) + ' ' + pc.red(`${typeLabel} size exceeds limit`)
+  );
+  console.log();
+
+  if (skillName) {
+    console.log(`  ${pc.dim('skill:')}        ${pc.cyan(skillName)}`);
+  }
+  console.log(`  ${pc.dim(actualLabel + ':')}  ${pc.yellow(actualFormatted)}`);
+  console.log(`  ${pc.dim(maxLabel + ':')}    ${pc.red(maxFormatted)}`);
+  console.log();
+
+  if (type === 'repo') {
+    console.log(pc.dim('  Use --max-repo-size to increase the limit.'));
+    console.log(pc.dim('  Use --skip-size-check to bypass this check.'));
+  } else {
+    console.log(pc.dim('  Use --max-size to increase the limit.'));
+    console.log(pc.dim('  Use --skip-size-check to bypass this check.'));
+  }
+  console.log();
 }
 
 export async function runPack(source: string | null, options: PackOptions): Promise<void> {
@@ -308,6 +440,27 @@ export async function runPack(source: string | null, options: PackOptions): Prom
       skillsDir = parsed.localPath!;
       spinner.stop('Local path validated');
     } else {
+      const maxRepoSize = options.maxRepoSize ?? DEFAULT_MAX_REPO_SIZE_MB * 1024 * 1024;
+      const skipSizeCheck = options.skipSizeCheck;
+
+      if (!skipSizeCheck) {
+        spinner.start('Checking repository size...');
+        const repoSizeResult = await fetchRemoteRepoSize(parsed);
+
+        if (repoSizeResult.success && repoSizeResult.size) {
+          if (repoSizeResult.size.bytes > maxRepoSize) {
+            spinner.stop(pc.red('Size check failed'));
+            showSizeError('repo', repoSizeResult.size.bytes, maxRepoSize);
+            process.exit(1);
+          }
+          spinner.stop(`Repository size: ${pc.green(repoSizeResult.size.formatted)}`);
+        } else if (repoSizeResult.error) {
+          spinner.stop(pc.yellow('Size check skipped') + pc.dim(` (${repoSizeResult.error})`));
+        } else {
+          spinner.stop(pc.yellow('Size check skipped') + pc.dim(' (unable to determine size)'));
+        }
+      }
+
       spinner.start('Cloning repository...');
       tempDir = await cloneRepo(parsed.url, parsed.ref);
       skillsDir = tempDir;
@@ -493,6 +646,9 @@ export async function runPack(source: string | null, options: PackOptions): Prom
 
     spinner.start('Validating and packing...');
 
+    const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE_MB * 1024 * 1024;
+    const skipSizeCheck = options.skipSizeCheck;
+
     const results: Array<{
       skill: Skill;
       outputFile: string;
@@ -513,6 +669,19 @@ export async function runPack(source: string | null, options: PackOptions): Prom
           error: validation.message,
         });
         continue;
+      }
+
+      if (!skipSizeCheck) {
+        spinner.stop(pc.yellow('Checking skill size...'));
+        const skillSize = await calculateSkillSize(skill.path);
+        spinner.start('Validating and packing...');
+
+        if (skillSize > maxSize) {
+          spinner.stop(pc.red('Size check failed'));
+          await cleanup(tempDir);
+          showSizeError('skill', skillSize, maxSize, skillName);
+          process.exit(1);
+        }
       }
 
       const result = await packageSkillToZip(skill.path, outputFile);
@@ -666,6 +835,9 @@ async function runPackInstalled(
 
   spinner.start('Validating and packing...');
 
+  const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE_MB * 1024 * 1024;
+  const skipSizeCheck = options.skipSizeCheck;
+
   const results: Array<{
     skill: InstalledSkillForPack;
     outputFile: string;
@@ -685,6 +857,18 @@ async function runPackInstalled(
         error: validation.message,
       });
       continue;
+    }
+
+    if (!skipSizeCheck) {
+      spinner.stop(pc.yellow('Checking skill size...'));
+      const skillSize = await calculateSkillSize(skill.path);
+      spinner.start('Validating and packing...');
+
+      if (skillSize > maxSize) {
+        spinner.stop(pc.red('Size check failed'));
+        showSizeError('skill', skillSize, maxSize, skill.name);
+        process.exit(1);
+      }
     }
 
     const result = await packageSkillToZip(skill.path, outputFile);

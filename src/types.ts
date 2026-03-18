@@ -95,3 +95,21 @@ export interface RemoteSkill {
   /** Any additional metadata from frontmatter */
   metadata?: Record<string, unknown>;
 }
+
+export interface SizeInfo {
+  /** Size in bytes */
+  bytes: number;
+  /** Human-readable formatted string (e.g., "50 MB") */
+  formatted: string;
+}
+
+export interface RepoSizeResult {
+  /** Whether the size check was successful */
+  success: boolean;
+  /** Repository size if available */
+  size?: SizeInfo;
+  /** Error message if check failed */
+  error?: string;
+  /** Whether the result is truncated (partial data) */
+  truncated?: boolean;
+}

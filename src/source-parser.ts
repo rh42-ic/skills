@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from 'path';
-import type { ParsedSource } from './types.ts';
+import type { ParsedSource, RepoSizeResult } from './types.ts';
+import { getGitHubToken } from './skill-lock.ts';
 
 /**
  * Extract owner/repo (or group/subgroup/repo for GitLab) from a parsed source
@@ -306,4 +307,222 @@ function isWellKnownUrl(input: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Extract GitLab project path from URL
+ * Returns the URL-encoded project path (e.g., "owner%2Frepo" or "group%2Fsubgroup%2Frepo")
+ */
+function getGitLabProjectPath(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.includes('gitlab')) {
+      return null;
+    }
+    let path = parsed.pathname.slice(1);
+    path = path.replace(/\.git$/, '');
+    return encodeURIComponent(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get GitLab token from user's environment.
+ * Tries in order:
+ * 1. GITLAB_TOKEN environment variable
+ * 2. GL_TOKEN environment variable
+ *
+ * @returns The token string or null if not available
+ */
+function getGitLabToken(): string | null {
+  if (process.env.GITLAB_TOKEN) {
+    return process.env.GITLAB_TOKEN;
+  }
+  if (process.env.GL_TOKEN) {
+    return process.env.GL_TOKEN;
+  }
+  return null;
+}
+
+/**
+ * Format bytes into human-readable string
+ */
+function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  if (bytes === 0) return '0 B';
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const size = bytes / Math.pow(1024, i);
+  return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+/**
+ * Fetch repository size from GitHub using Trees API
+ * Returns the total size of all files in the repository (or a specific path if subpath is provided)
+ */
+async function fetchGitHubRepoSize(
+  owner: string,
+  repo: string,
+  ref: string | undefined,
+  subpath: string | undefined,
+  token: string | null
+): Promise<RepoSizeResult> {
+  const branches = ref ? [ref] : ['main', 'master'];
+
+  for (const branch of branches) {
+    try {
+      const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+      const headers: Record<string, string> = {
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'skills-cli',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const response = await fetch(url, { headers });
+
+      if (!response.ok) {
+        if (response.status === 404) continue;
+        return {
+          success: false,
+          error: `GitHub API error: ${response.status} ${response.statusText}`,
+        };
+      }
+
+      const data = (await response.json()) as {
+        truncated?: boolean;
+        tree: Array<{ path: string; type: string; size?: number }>;
+      };
+
+      let totalSize = 0;
+
+      for (const entry of data.tree) {
+        if (entry.type === 'blob' && entry.size !== undefined) {
+          // If subpath is specified, only count files within that path
+          if (subpath) {
+            const normalizedSubpath = subpath.replace(/\\/g, '/').replace(/\/$/, '');
+            if (
+              entry.path.startsWith(normalizedSubpath + '/') ||
+              entry.path === normalizedSubpath
+            ) {
+              totalSize += entry.size;
+            }
+          } else {
+            totalSize += entry.size;
+          }
+        }
+      }
+
+      return {
+        success: true,
+        size: { bytes: totalSize, formatted: formatBytes(totalSize) },
+        truncated: data.truncated,
+      };
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: errMsg };
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Could not fetch repository tree from GitHub',
+  };
+}
+
+/**
+ * Fetch repository size from GitLab using Projects API
+ * Returns the total repository size (not specific to a path)
+ */
+async function fetchGitLabRepoSize(
+  gitlabUrl: string,
+  token: string | null
+): Promise<RepoSizeResult> {
+  const projectPath = getGitLabProjectPath(gitlabUrl);
+  if (!projectPath) {
+    return { success: false, error: 'Invalid GitLab URL' };
+  }
+
+  // Extract host from URL
+  let host = 'gitlab.com';
+  try {
+    const parsed = new URL(gitlabUrl);
+    host = parsed.hostname;
+  } catch {
+    // Use default host
+  }
+
+  try {
+    const url = `https://${host}/api/v4/projects/${projectPath}`;
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+    };
+    if (token) {
+      headers['PRIVATE-TOKEN'] = token;
+    }
+
+    const response = await fetch(url, { headers });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: `GitLab API error: ${response.status} ${response.statusText}`,
+      };
+    }
+
+    const data = (await response.json()) as {
+      statistics?: {
+        repository_size?: number;
+      };
+    };
+
+    // GitLab returns size in bytes
+    const sizeBytes = data.statistics?.repository_size ?? 0;
+
+    return {
+      success: true,
+      size: { bytes: sizeBytes, formatted: formatBytes(sizeBytes) },
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * Fetch repository size from a remote source (GitHub or GitLab)
+ * This is used to check size limits before cloning.
+ *
+ * @param parsed - The parsed source
+ * @returns RepoSizeResult with size information
+ */
+export async function fetchRemoteRepoSize(parsed: ParsedSource): Promise<RepoSizeResult> {
+  if (parsed.type === 'local' || parsed.type === 'well-known') {
+    return { success: false, error: 'Cannot fetch size for local or well-known sources' };
+  }
+
+  // Extract owner/repo from URL
+  const ownerRepo = getOwnerRepo(parsed);
+  if (!ownerRepo) {
+    return { success: false, error: 'Could not parse owner/repo from URL' };
+  }
+
+  const [owner, repo] = ownerRepo.split('/');
+
+  if (parsed.type === 'github' && owner && repo) {
+    const token = getGitHubToken();
+    return fetchGitHubRepoSize(owner, repo, parsed.ref, parsed.subpath, token);
+  }
+
+  if (parsed.type === 'gitlab') {
+    const token = getGitLabToken();
+    return fetchGitLabRepoSize(parsed.url, token);
+  }
+
+  // For other git sources, we cannot pre-check the size
+  return {
+    success: false,
+    error: 'Size check not supported for this source type',
+  };
 }
