@@ -3,7 +3,7 @@ import pc from 'picocolors';
 import { existsSync, mkdirSync, createWriteStream } from 'fs';
 import { resolve, relative, basename, dirname } from 'path';
 import { homedir } from 'os';
-import { readdir as readdirAsync, stat as statAsync } from 'fs/promises';
+import { readdir as readdirAsync, stat as statAsync, lstat, realpath } from 'fs/promises';
 import archiver from 'archiver';
 import { parseSource, fetchRemoteRepoSize, getOwnerRepo } from './source-parser.ts';
 import { cloneRepo, cleanupTempDir, GitCloneError } from './git.ts';
@@ -14,6 +14,11 @@ import type { Skill, RepoSizeResult } from './types.ts';
 interface InstalledSkillForPack {
   name: string;
   path: string;
+}
+
+interface CollectedFile {
+  realPath: string;
+  archivePath: string;
 }
 
 const EXCLUDE_DIRS = ['__pycache__', 'node_modules'];
@@ -105,6 +110,82 @@ function matchGlob(filename: string, pattern: string): boolean {
   return filename === pattern;
 }
 
+async function collectFilesFromDir(
+  dir: string,
+  parentDir: string,
+  skillRoot: string,
+  visited: Set<string>,
+  archivePrefix?: string
+): Promise<CollectedFile[]> {
+  const files: CollectedFile[] = [];
+
+  const realDir = await realpath(dir).catch(() => null);
+  if (!realDir) {
+    return files;
+  }
+
+  if (visited.has(realDir)) {
+    return files;
+  }
+  visited.add(realDir);
+
+  const entries = await readdirAsync(dir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = resolve(dir, entry.name);
+    const relPath = archivePrefix
+      ? `${archivePrefix}/${entry.name}`
+      : relative(parentDir, fullPath);
+
+    if (shouldExclude(relPath, skillRoot)) {
+      continue;
+    }
+
+    if (entry.isSymbolicLink()) {
+      const realPath = await realpath(fullPath).catch(() => null);
+
+      if (!realPath) {
+        console.warn(`Skipping broken symlink: ${fullPath}`);
+        continue;
+      }
+
+      if (visited.has(realPath)) {
+        console.warn(`Skipping circular symlink: ${fullPath} -> ${realPath}`);
+        continue;
+      }
+
+      const realStat = await lstat(realPath).catch(() => null);
+      if (!realStat) continue;
+
+      if (realStat.isDirectory()) {
+        const subFiles = await collectFilesFromDir(
+          realPath,
+          parentDir,
+          skillRoot,
+          visited,
+          archivePrefix ? `${archivePrefix}/${entry.name}` : relative(parentDir, fullPath)
+        );
+        files.push(...subFiles);
+      } else if (realStat.isFile()) {
+        files.push({ realPath, archivePath: relPath });
+      }
+    } else if (entry.isDirectory()) {
+      const subFiles = await collectFilesFromDir(
+        fullPath,
+        parentDir,
+        skillRoot,
+        visited,
+        archivePrefix
+      );
+      files.push(...subFiles);
+    } else if (entry.isFile()) {
+      files.push({ realPath: fullPath, archivePath: relPath });
+    }
+  }
+
+  return files;
+}
+
 async function getInstalledSkillsForPack(): Promise<InstalledSkillForPack[]> {
   const home = homedir();
   const globalSkillsDir = resolve(home, '.agents', 'skills');
@@ -166,28 +247,13 @@ async function packageSkillToZip(
 
     const skillRoot = skillPath;
     const parentDir = resolve(skillPath, '..');
+    const visited = new Set<string>();
 
-    const addDirectory = async (dir: string): Promise<void> => {
-      const entries = await readdirAsync(dir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        const fullPath = resolve(dir, entry.name);
-        const relPath = relative(parentDir, fullPath);
-
-        if (shouldExclude(relPath, skillRoot)) {
-          continue;
+    collectFilesFromDir(skillPath, parentDir, skillRoot, visited)
+      .then((files) => {
+        for (const file of files) {
+          archive.file(file.realPath, { name: file.archivePath });
         }
-
-        if (entry.isDirectory()) {
-          await addDirectory(fullPath);
-        } else if (entry.isFile()) {
-          archive.file(fullPath, { name: relPath });
-        }
-      }
-    };
-
-    addDirectory(skillPath)
-      .then(() => {
         archive.finalize();
       })
       .catch((err) => {
@@ -200,32 +266,19 @@ async function calculateSkillSize(skillPath: string): Promise<number> {
   let totalSize = 0;
   const skillRoot = skillPath;
   const parentDir = resolve(skillPath, '..');
+  const visited = new Set<string>();
 
-  const calculateDir = async (dir: string): Promise<void> => {
-    const entries = await readdirAsync(dir, { withFileTypes: true });
+  const files = await collectFilesFromDir(skillPath, parentDir, skillRoot, visited);
 
-    for (const entry of entries) {
-      const fullPath = resolve(dir, entry.name);
-      const relPath = relative(parentDir, fullPath);
-
-      if (shouldExclude(relPath, skillRoot)) {
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        await calculateDir(fullPath);
-      } else if (entry.isFile()) {
-        try {
-          const stats = await statAsync(fullPath);
-          totalSize += stats.size;
-        } catch {
-          // Ignore files that can't be stat'd
-        }
-      }
+  for (const file of files) {
+    try {
+      const stats = await statAsync(file.realPath);
+      totalSize += stats.size;
+    } catch {
+      // Ignore files that can't be stat'd
     }
-  };
+  }
 
-  await calculateDir(skillPath);
   return totalSize;
 }
 
