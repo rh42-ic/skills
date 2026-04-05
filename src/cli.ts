@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from 'child_process';
-import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { basename, join, dirname } from 'path';
 import { homedir } from 'os';
-import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { runAdd, parseAddOptions, initTelemetry } from './add.ts';
 import { runFind } from './find.ts';
@@ -15,6 +14,7 @@ import { runSync, parseSyncOptions } from './sync.ts';
 import { runPack, parsePackOptions } from './pack.ts';
 import { track } from './telemetry.ts';
 import { fetchSkillFolderHash, getGitHubToken } from './skill-lock.ts';
+import { buildUpdateInstallSource, formatSourceInput } from './update-source.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -340,13 +340,13 @@ Describe when this skill should be used.
 
 const AGENTS_DIR = '.agents';
 const LOCK_FILE = '.skill-lock.json';
-const CHECK_UPDATES_API_URL = 'https://add-skill.vercel.sh/check-updates';
 const CURRENT_LOCK_VERSION = 3; // Bumped from 2 to 3 for folder hash support
 
 interface SkillLockEntry {
   source: string;
   sourceType: string;
   sourceUrl: string;
+  ref?: string;
   skillPath?: string;
   /** GitHub tree SHA for the entire skill folder (v3) */
   skillFolderHash: string;
@@ -357,29 +357,6 @@ interface SkillLockEntry {
 interface SkillLockFile {
   version: number;
   skills: Record<string, SkillLockEntry>;
-}
-
-interface CheckUpdatesRequest {
-  skills: Array<{
-    name: string;
-    source: string;
-    path?: string;
-    skillFolderHash: string;
-  }>;
-}
-
-interface CheckUpdatesResponse {
-  updates: Array<{
-    name: string;
-    source: string;
-    currentHash: string;
-    latestHash: string;
-  }>;
-  errors?: Array<{
-    name: string;
-    source: string;
-    error: string;
-  }>;
 }
 
 function getSkillLockPath(): string {
@@ -409,19 +386,11 @@ function readSkillLock(): SkillLockFile {
   }
 }
 
-function writeSkillLock(lock: SkillLockFile): void {
-  const lockPath = getSkillLockPath();
-  const dir = dirname(lockPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(lockPath, JSON.stringify(lock, null, 2), 'utf-8');
-}
-
 interface SkippedSkill {
   name: string;
   reason: string;
   sourceUrl: string;
+  ref?: string;
 }
 
 /**
@@ -453,7 +422,9 @@ function printSkippedSkills(skipped: SkippedSkill[]): void {
   console.log(`${DIM}${skipped.length} skill(s) cannot be checked automatically:${RESET}`);
   for (const skill of skipped) {
     console.log(`  ${TEXT}•${RESET} ${skill.name} ${DIM}(${skill.reason})${RESET}`);
-    console.log(`    ${DIM}To update: ${TEXT}npx skills add ${skill.sourceUrl} -g -y${RESET}`);
+    console.log(
+      `    ${DIM}To update: ${TEXT}npx skills add ${formatSourceInput(skill.sourceUrl, skill.ref)} -g -y${RESET}`
+    );
   }
 }
 
@@ -483,7 +454,12 @@ async function runCheck(args: string[] = []): Promise<void> {
 
     // Only check skills with folder hash and skill path
     if (!entry.skillFolderHash || !entry.skillPath) {
-      skipped.push({ name: skillName, reason: getSkipReason(entry), sourceUrl: entry.sourceUrl });
+      skipped.push({
+        name: skillName,
+        reason: getSkipReason(entry),
+        sourceUrl: entry.sourceUrl,
+        ref: entry.ref,
+      });
       continue;
     }
 
@@ -508,7 +484,7 @@ async function runCheck(args: string[] = []): Promise<void> {
   for (const [source, skills] of skillsBySource) {
     for (const { name, entry } of skills) {
       try {
-        const latestHash = await fetchSkillFolderHash(source, entry.skillPath!, token);
+        const latestHash = await fetchSkillFolderHash(source, entry.skillPath!, token, entry.ref);
 
         if (!latestHash) {
           errors.push({ name, source, error: 'Could not fetch from GitHub' });
@@ -548,6 +524,11 @@ async function runCheck(args: string[] = []): Promise<void> {
   if (errors.length > 0) {
     console.log();
     console.log(`${DIM}Could not check ${errors.length} skill(s) (may need reinstall)${RESET}`);
+    console.log();
+    for (const error of errors) {
+      console.log(`  ${DIM}✗${RESET} ${error.name}`);
+      console.log(`    ${DIM}source: ${error.source}${RESET}`);
+    }
   }
 
   printSkippedSkills(skipped);
@@ -588,12 +569,22 @@ async function runUpdate(): Promise<void> {
 
     // Only check skills with folder hash and skill path
     if (!entry.skillFolderHash || !entry.skillPath) {
-      skipped.push({ name: skillName, reason: getSkipReason(entry), sourceUrl: entry.sourceUrl });
+      skipped.push({
+        name: skillName,
+        reason: getSkipReason(entry),
+        sourceUrl: entry.sourceUrl,
+        ref: entry.ref,
+      });
       continue;
     }
 
     try {
-      const latestHash = await fetchSkillFolderHash(entry.source, entry.skillPath, token);
+      const latestHash = await fetchSkillFolderHash(
+        entry.source,
+        entry.skillPath,
+        token,
+        entry.ref
+      );
 
       if (latestHash && latestHash !== entry.skillFolderHash) {
         updates.push({ name: skillName, source: entry.source, entry });
@@ -627,30 +618,22 @@ async function runUpdate(): Promise<void> {
   for (const update of updates) {
     console.log(`${TEXT}Updating ${update.name}...${RESET}`);
 
-    // Build the URL with subpath to target the specific skill directory
-    // e.g., https://github.com/owner/repo/tree/main/skills/my-skill
-    let installUrl = update.entry.sourceUrl;
-    if (update.entry.skillPath) {
-      // Extract the skill folder path (remove /SKILL.md suffix)
-      let skillFolder = update.entry.skillPath;
-      if (skillFolder.endsWith('/SKILL.md')) {
-        skillFolder = skillFolder.slice(0, -9);
-      } else if (skillFolder.endsWith('SKILL.md')) {
-        skillFolder = skillFolder.slice(0, -8);
-      }
-      if (skillFolder.endsWith('/')) {
-        skillFolder = skillFolder.slice(0, -1);
-      }
+    // Build the source input to target the specific skill directory/ref.
+    // e.g., owner/repo/skills/my-skill#feature-branch
+    const installUrl = buildUpdateInstallSource(update.entry);
 
-      // Convert git URL to tree URL with path
-      // https://github.com/owner/repo.git -> https://github.com/owner/repo/tree/main/path
-      installUrl = update.entry.sourceUrl.replace(/\.git$/, '').replace(/\/$/, '');
-      installUrl = `${installUrl}/tree/main/${skillFolder}`;
+    // Reinstall using the current CLI entrypoint directly (avoid nested npm exec/npx)
+    const cliEntry = join(__dirname, '..', 'bin', 'cli.mjs');
+    if (!existsSync(cliEntry)) {
+      failCount++;
+      console.log(
+        `  ${DIM}✗ Failed to update ${update.name}: CLI entrypoint not found at ${cliEntry}${RESET}`
+      );
+      continue;
     }
-
-    // Use skills CLI to reinstall with -g -y flags
-    const result = spawnSync('npx', ['-y', 'skills', 'add', installUrl, '-g', '-y'], {
+    const result = spawnSync(process.execPath, [cliEntry, 'add', installUrl, '-g', '-y'], {
       stdio: ['inherit', 'pipe', 'pipe'],
+      encoding: 'utf-8',
       shell: process.platform === 'win32',
     });
 

@@ -129,26 +129,96 @@ const SOURCE_ALIASES: Record<string, string> = {
   'coinbase/agentWallet': 'coinbase/agentic-wallet-skills',
 };
 
+interface FragmentRefResult {
+  inputWithoutFragment: string;
+  ref?: string;
+  skillFilter?: string;
+}
+
+function decodeFragmentValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function looksLikeGitSource(input: string): boolean {
+  if (input.startsWith('github:') || input.startsWith('gitlab:') || input.startsWith('git@')) {
+    return true;
+  }
+
+  if (input.startsWith('http://') || input.startsWith('https://')) {
+    try {
+      const parsed = new URL(input);
+      const pathname = parsed.pathname;
+
+      // Only treat GitHub fragments as refs for repo/tree URLs.
+      if (parsed.hostname === 'github.com') {
+        return /^\/[^/]+\/[^/]+(?:\.git)?(?:\/tree\/[^/]+(?:\/.*)?)?\/?$/.test(pathname);
+      }
+
+      // Only treat gitlab.com fragments as refs for repo/tree URLs.
+      if (parsed.hostname === 'gitlab.com') {
+        return /^\/.+?\/[^/]+(?:\.git)?(?:\/-\/tree\/[^/]+(?:\/.*)?)?\/?$/.test(pathname);
+      }
+    } catch {
+      // Fall through to generic checks below.
+    }
+  }
+
+  if (/^https?:\/\/.+\.git(?:$|[/?])/i.test(input)) {
+    return true;
+  }
+
+  return (
+    !input.includes(':') &&
+    !input.startsWith('.') &&
+    !input.startsWith('/') &&
+    /^([^/]+)\/([^/]+)(?:\/(.+)|@(.+))?$/.test(input)
+  );
+}
+
+function parseFragmentRef(input: string): FragmentRefResult {
+  const hashIndex = input.indexOf('#');
+  if (hashIndex < 0) {
+    return { inputWithoutFragment: input };
+  }
+
+  const inputWithoutFragment = input.slice(0, hashIndex);
+  const fragment = input.slice(hashIndex + 1);
+
+  // Treat URL fragments as git refs only for git-like sources.
+  // This avoids changing behavior for generic well-known URLs.
+  if (!fragment || !looksLikeGitSource(inputWithoutFragment)) {
+    return { inputWithoutFragment: input };
+  }
+
+  const atIndex = fragment.indexOf('@');
+  if (atIndex === -1) {
+    return {
+      inputWithoutFragment,
+      ref: decodeFragmentValue(fragment),
+    };
+  }
+
+  const ref = fragment.slice(0, atIndex);
+  const skillFilter = fragment.slice(atIndex + 1);
+  return {
+    inputWithoutFragment,
+    ref: ref ? decodeFragmentValue(ref) : undefined,
+    skillFilter: skillFilter ? decodeFragmentValue(skillFilter) : undefined,
+  };
+}
+
+function appendFragmentRef(input: string, ref?: string, skillFilter?: string): string {
+  if (!ref) {
+    return input;
+  }
+  return `${input}#${ref}${skillFilter ? `@${skillFilter}` : ''}`;
+}
+
 export function parseSource(input: string): ParsedSource {
-  // Resolve source aliases before parsing
-  const alias = SOURCE_ALIASES[input];
-  if (alias) {
-    input = alias;
-  }
-
-  // Prefix shorthand: github:owner/repo -> owner/repo (handled by existing shorthand logic)
-  // Also supports github:owner/repo/subpath and github:owner/repo@skill
-  const githubPrefixMatch = input.match(/^github:(.+)$/);
-  if (githubPrefixMatch) {
-    return parseSource(githubPrefixMatch[1]!);
-  }
-
-  // Prefix shorthand: gitlab:owner/repo -> https://gitlab.com/owner/repo
-  const gitlabPrefixMatch = input.match(/^gitlab:(.+)$/);
-  if (gitlabPrefixMatch) {
-    return parseSource(`https://gitlab.com/${gitlabPrefixMatch[1]!}`);
-  }
-
   // Local path: absolute, relative, or current directory
   if (isLocalPath(input)) {
     const resolvedPath = resolve(input);
@@ -160,6 +230,38 @@ export function parseSource(input: string): ParsedSource {
     };
   }
 
+  const {
+    inputWithoutFragment,
+    ref: fragmentRef,
+    skillFilter: fragmentSkillFilter,
+  } = parseFragmentRef(input);
+  input = inputWithoutFragment;
+
+  // Resolve source aliases before parsing
+  const alias = SOURCE_ALIASES[input];
+  if (alias) {
+    input = alias;
+  }
+
+  // Prefix shorthand: github:owner/repo -> owner/repo (handled by existing shorthand logic)
+  // Also supports github:owner/repo/subpath and github:owner/repo@skill
+  const githubPrefixMatch = input.match(/^github:(.+)$/);
+  if (githubPrefixMatch) {
+    return parseSource(appendFragmentRef(githubPrefixMatch[1]!, fragmentRef, fragmentSkillFilter));
+  }
+
+  // Prefix shorthand: gitlab:owner/repo -> https://gitlab.com/owner/repo
+  const gitlabPrefixMatch = input.match(/^gitlab:(.+)$/);
+  if (gitlabPrefixMatch) {
+    return parseSource(
+      appendFragmentRef(
+        `https://gitlab.com/${gitlabPrefixMatch[1]!}`,
+        fragmentRef,
+        fragmentSkillFilter
+      )
+    );
+  }
+
   // GitHub URL with path: https://github.com/owner/repo/tree/branch/path/to/skill
   const githubTreeWithPathMatch = input.match(/github\.com\/([^/]+)\/([^/]+)\/tree\/([^/]+)\/(.+)/);
   if (githubTreeWithPathMatch) {
@@ -167,7 +269,7 @@ export function parseSource(input: string): ParsedSource {
     return {
       type: 'github',
       url: `https://github.com/${owner}/${repo}.git`,
-      ref,
+      ref: ref || fragmentRef,
       subpath: subpath ? sanitizeSubpath(subpath) : subpath,
     };
   }
@@ -179,7 +281,7 @@ export function parseSource(input: string): ParsedSource {
     return {
       type: 'github',
       url: `https://github.com/${owner}/${repo}.git`,
-      ref,
+      ref: ref || fragmentRef,
     };
   }
 
@@ -191,6 +293,7 @@ export function parseSource(input: string): ParsedSource {
     return {
       type: 'github',
       url: `https://github.com/${owner}/${cleanRepo}.git`,
+      ...(fragmentRef ? { ref: fragmentRef } : {}),
     };
   }
 
@@ -206,7 +309,7 @@ export function parseSource(input: string): ParsedSource {
       return {
         type: 'gitlab',
         url: `${protocol}://${hostname}/${repoPath.replace(/\.git$/, '')}.git`,
-        ref,
+        ref: ref || fragmentRef,
         subpath: subpath ? sanitizeSubpath(subpath) : subpath,
       };
     }
@@ -220,7 +323,7 @@ export function parseSource(input: string): ParsedSource {
       return {
         type: 'gitlab',
         url: `${protocol}://${hostname}/${repoPath.replace(/\.git$/, '')}.git`,
-        ref,
+        ref: ref || fragmentRef,
       };
     }
   }
@@ -236,6 +339,7 @@ export function parseSource(input: string): ParsedSource {
       return {
         type: 'gitlab',
         url: `https://gitlab.com/${repoPath}.git`,
+        ...(fragmentRef ? { ref: fragmentRef } : {}),
       };
     }
   }
@@ -249,22 +353,26 @@ export function parseSource(input: string): ParsedSource {
     return {
       type: 'github',
       url: `https://github.com/${owner}/${repo}.git`,
-      skillFilter,
+      ...(fragmentRef ? { ref: fragmentRef } : {}),
+      skillFilter: fragmentSkillFilter || skillFilter,
     };
   }
 
-  const shorthandMatch = input.match(/^([^/]+)\/([^/]+)(?:\/(.+))?$/);
+  const shorthandMatch = input.match(/^([^/]+)\/([^/]+)(?:\/(.+?))?\/?$/);
   if (shorthandMatch && !input.includes(':') && !input.startsWith('.') && !input.startsWith('/')) {
     const [, owner, repo, subpath] = shorthandMatch;
     return {
       type: 'github',
       url: `https://github.com/${owner}/${repo}.git`,
+      ...(fragmentRef ? { ref: fragmentRef } : {}),
       subpath: subpath ? sanitizeSubpath(subpath) : subpath,
+      ...(fragmentSkillFilter ? { skillFilter: fragmentSkillFilter } : {}),
     };
   }
 
   // Well-known skills: arbitrary HTTP(S) URLs that aren't GitHub/GitLab
-  // This is the final fallback for URLs - we'll check for /.well-known/skills/index.json
+  // This is the final fallback for URLs - we'll check for /.well-known/agent-skills/index.json
+  // then fall back to /.well-known/skills/index.json
   if (isWellKnownUrl(input)) {
     return {
       type: 'well-known',
@@ -276,6 +384,7 @@ export function parseSource(input: string): ParsedSource {
   return {
     type: 'git',
     url: input,
+    ...(fragmentRef ? { ref: fragmentRef } : {}),
   };
 }
 

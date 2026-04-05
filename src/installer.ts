@@ -11,6 +11,7 @@ import {
   stat,
   realpath,
 } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, basename, normalize, resolve, sep, relative, dirname } from 'path';
 import { homedir, platform } from 'os';
 import type { Skill, AgentType, RemoteSkill } from './types.ts';
@@ -698,6 +699,118 @@ export async function installWellKnownSkillForAgent(
   }
 }
 
+/**
+ * Install a blob-downloaded skill (fetched from skills.sh download API).
+ * Similar to installWellKnownSkillForAgent but takes the snapshot file format
+ * (array of { path, contents }) instead of a Map.
+ */
+export async function installBlobSkillForAgent(
+  skill: { installName: string; files: Array<{ path: string; contents: string }> },
+  agentType: AgentType,
+  options: { global?: boolean; cwd?: string; mode?: InstallMode } = {}
+): Promise<InstallResult> {
+  const agent = agents[agentType];
+  const isGlobal = options.global ?? false;
+  const cwd = options.cwd || process.cwd();
+  const installMode = options.mode ?? 'symlink';
+
+  if (isGlobal && agent.globalSkillsDir === undefined) {
+    return {
+      success: false,
+      path: '',
+      mode: installMode,
+      error: `${agent.displayName} does not support global skill installation`,
+    };
+  }
+
+  const skillName = sanitizeName(skill.installName);
+  const canonicalBase = getCanonicalSkillsDir(isGlobal, cwd);
+  const canonicalDir = join(canonicalBase, skillName);
+  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd);
+  const agentDir = join(agentBase, skillName);
+
+  if (!isPathSafe(canonicalBase, canonicalDir)) {
+    return {
+      success: false,
+      path: agentDir,
+      mode: installMode,
+      error: 'Invalid skill name: potential path traversal detected',
+    };
+  }
+
+  if (!isPathSafe(agentBase, agentDir)) {
+    return {
+      success: false,
+      path: agentDir,
+      mode: installMode,
+      error: 'Invalid skill name: potential path traversal detected',
+    };
+  }
+
+  async function writeSkillFiles(targetDir: string): Promise<void> {
+    for (const file of skill.files) {
+      const fullPath = join(targetDir, file.path);
+      if (!isPathSafe(targetDir, fullPath)) continue;
+
+      const parentDir = dirname(fullPath);
+      if (parentDir !== targetDir) {
+        await mkdir(parentDir, { recursive: true });
+      }
+
+      await writeFile(fullPath, file.contents, 'utf-8');
+    }
+  }
+
+  try {
+    if (installMode === 'copy') {
+      await cleanAndCreateDirectory(agentDir);
+      await writeSkillFiles(agentDir);
+      return { success: true, path: agentDir, mode: 'copy' };
+    }
+
+    // Symlink mode
+    await cleanAndCreateDirectory(canonicalDir);
+    await writeSkillFiles(canonicalDir);
+
+    if (isGlobal && isUniversalAgent(agentType)) {
+      return {
+        success: true,
+        path: canonicalDir,
+        canonicalPath: canonicalDir,
+        mode: 'symlink',
+      };
+    }
+
+    const symlinkCreated = await createSymlink(canonicalDir, agentDir);
+
+    if (!symlinkCreated) {
+      await cleanAndCreateDirectory(agentDir);
+      await writeSkillFiles(agentDir);
+      return {
+        success: true,
+        path: agentDir,
+        canonicalPath: canonicalDir,
+        mode: 'symlink',
+        symlinkFailed: true,
+      };
+    }
+
+    return {
+      success: true,
+      path: agentDir,
+      canonicalPath: canonicalDir,
+      mode: 'symlink',
+    };
+  } catch (error) {
+    return {
+      success: false,
+      path: agentDir,
+      mode: installMode,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
 export interface InstalledSkill {
   name: string;
   description: string;
@@ -771,6 +884,22 @@ export async function listInstalledSkills(
       const agentDir = isGlobal ? agent.globalSkillsDir! : join(cwd, agent.skillsDir);
       // Avoid duplicate paths
       if (!scopes.some((s) => s.path === agentDir && s.global === isGlobal)) {
+        scopes.push({ global: isGlobal, path: agentDir, agentType });
+      }
+    }
+
+    // Also scan skill directories for agents NOT in agentsToCheck, in case
+    // skills were installed with `--agent <name>` but the agent is no longer
+    // detected (e.g. ~/.openclaw was removed).  Only add dirs that actually
+    // exist on disk to avoid unnecessary readdir errors.
+    const allAgentTypes = Object.keys(agents) as AgentType[];
+    for (const agentType of allAgentTypes) {
+      if (agentsToCheck.includes(agentType)) continue;
+      const agent = agents[agentType];
+      if (isGlobal && agent.globalSkillsDir === undefined) continue;
+      const agentDir = isGlobal ? agent.globalSkillsDir! : join(cwd, agent.skillsDir);
+      if (scopes.some((s) => s.path === agentDir && s.global === isGlobal)) continue;
+      if (existsSync(agentDir)) {
         scopes.push({ global: isGlobal, path: agentDir, agentType });
       }
     }

@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import matter from 'gray-matter';
+import { parseFrontmatter } from './frontmatter.ts';
 
 export interface ValidationResult {
   valid: boolean;
@@ -70,7 +70,7 @@ export async function validateSkill(
 
   let frontmatter: Record<string, unknown>;
   try {
-    frontmatter = matter(content).data as Record<string, unknown>;
+    frontmatter = parseFrontmatter(content).data;
     if (typeof frontmatter !== 'object' || frontmatter === null) {
       errors.push('Frontmatter must be a YAML dictionary');
       return {
